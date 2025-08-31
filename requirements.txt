@@ -1,0 +1,6 @@
+discord.py>=2.5.2
+mysql-connector-python>=9.3.0
+python-dotenv>=1.1.0
+python-telegram-bot>=22.3
+gspread>=6.1.2
+google-auth>=2.34.0
