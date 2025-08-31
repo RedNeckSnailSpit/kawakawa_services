@@ -8,7 +8,22 @@ Backend services for **Kawakawa Corporation**, providing automation and integrat
 
 This project serves as the core backend logic for Kawakawa’s internal tools.
 
-## Quickstart Guide
+
+## Related Projects
+
+- Frontend website: [Kawakawa Web](https://github.com/RedNeckSnailSpit/kawakawa_web)
+
+## License
+
+This project is released under the **GNU General Public License v3.0 (GPL-3.0)**.  
+See the [LICENSE](LICENSE) file for details.
+
+## Repository
+
+Source code is hosted at:  
+[GitHub](https://github.com/RedNeckSnailSpit/kawakawa_services)
+
+# Quickstart Guide
 
 Follow these steps to get **Kawakawa Services** up and running.
 
@@ -33,7 +48,7 @@ It’s recommended to use a virtual environment to isolate dependencies.
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-````
+```
 
 **Windows (cmd):**
 
@@ -62,21 +77,11 @@ pip install -r requirements.txt
 python main.py   # or `python3 main.py` depending on your environment
 ```
 
-1. Enter your **MariaDB connection details** when prompted. The script will test the connection and save it to `config.json`. **Make sure to keep your config.json secure, it contains plain text credentials to your DB**
-2. Script will create all required tables in the DB, you just need to create the user and database
-3. Enter your **Google Sheets ID** (for a link like `https://docs.google.com/spreadsheets/d/101234567890L6gpFKoGLiPRt1MyzUYzghsGCBmaLlU4/edit`, the ID is `101234567890L6gpFKoGLiPRt1MyzUYzghsGCBmaLlU4`).
-4. Enter the names of the **Pricing** and **Shipping** sheets. These will be saved for reuse.
+1. Enter your **MariaDB connection details** when prompted. The script will test the connection and save it to `config.json`. **Keep it secure; it contains plain text credentials.**  
+2. Script will create all required tables in the DB; you just need to create the user and database.  
+3. Enter your **Google Sheets ID** (for a link like `https://docs.google.com/spreadsheets/d/101234567890L6gpFKoGLiPRt1MyzUYzghsGCBmaLlU4/edit`, the ID is `101234567890L6gpFKoGLiPRt1MyzUYzghsGCBmaLlU4`).  
+4. Enter the names of the **Pricing** and **Shipping** sheets. These will be saved for reuse.  
 5. The script will now run daily at **midnight server time**, syncing prices with the database. It’s recommended to run it inside a `screen`, `tmux`, or another background service.
-
-## License
-
-This project is released under the **GNU General Public License v3.0 (GPL-3.0)**.  
-See the [LICENSE](LICENSE) file for details.
-
-## Repository
-
-Source code is hosted at:  
-[https://github.com/RedNeckSnailSpit/kawakawa_services](https://github.com/RedNeckSnailSpit/kawakawa_services)
 
 ---
 
