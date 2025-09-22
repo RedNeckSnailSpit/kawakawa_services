@@ -122,6 +122,100 @@ class DatabaseHandler:
             );
         """)
 
+        # NEW INVENTORY TABLES
+
+        # Players/Users table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS players (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # Planets table (for location mapping)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS planets (
+                id VARCHAR(36) PRIMARY KEY,  -- Planet ID from FIO API
+                identifier VARCHAR(50),      -- Planet identifier like "UV-351a"
+                name VARCHAR(255) NOT NULL,  -- Planet name like "Katoa"
+                founded_epoch_ms BIGINT,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # Sites table (bases on planets)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sites (
+                id VARCHAR(36) PRIMARY KEY,  -- Site ID from FIO API
+                planet_id VARCHAR(36),
+                username VARCHAR(255) NOT NULL,
+                invested_permits INT DEFAULT 0,
+                maximum_permits INT DEFAULT 3,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (planet_id) REFERENCES planets(id) ON UPDATE CASCADE,
+                FOREIGN KEY (username) REFERENCES players(username) ON UPDATE CASCADE
+            );
+        """)
+
+        # Ships table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ships (
+                addressable_id VARCHAR(36) PRIMARY KEY,  -- Ship's location ID
+                name VARCHAR(255) NOT NULL,
+                username VARCHAR(255) NOT NULL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (username) REFERENCES players(username) ON UPDATE CASCADE
+            );
+        """)
+
+        # Storage containers table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS storage_containers (
+                storage_id VARCHAR(36) PRIMARY KEY,  -- Storage ID from FIO API
+                addressable_id VARCHAR(36),          -- Location ID (links to ships/sites)
+                username VARCHAR(255) NOT NULL,
+                container_name VARCHAR(255),         -- Name (for ships) or NULL
+                storage_type ENUM('FTL_FUEL_STORE', 'STL_FUEL_STORE', 'SHIP_STORE', 'WAREHOUSE_STORE', 'STORE') NOT NULL,
+                weight_capacity DECIMAL(10,2) DEFAULT 0,
+                weight_load DECIMAL(10,2) DEFAULT 0,
+                volume_capacity DECIMAL(10,2) DEFAULT 0,
+                volume_load DECIMAL(10,2) DEFAULT 0,
+                fixed_store BOOLEAN DEFAULT FALSE,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (username) REFERENCES players(username) ON UPDATE CASCADE
+            );
+        """)
+
+        # Inventory items table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inventory_items (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                storage_id VARCHAR(36) NOT NULL,      -- Links to storage_containers
+                material_id VARCHAR(36) NOT NULL,     -- Material ID from FIO API
+                material_ticker VARCHAR(10) NOT NULL,
+                material_name VARCHAR(255) NOT NULL,
+                material_category VARCHAR(36),
+                amount INT NOT NULL DEFAULT 0,
+                material_weight DECIMAL(8,5) DEFAULT 0,
+                material_volume DECIMAL(8,5) DEFAULT 0,
+                total_weight DECIMAL(10,2) DEFAULT 0,
+                total_volume DECIMAL(10,2) DEFAULT 0,
+                material_value DECIMAL(10,2) DEFAULT 0,
+                material_value_currency VARCHAR(3) DEFAULT 'CIS',
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_storage_material (storage_id, material_id),
+                FOREIGN KEY (storage_id) REFERENCES storage_containers(storage_id) ON DELETE CASCADE,
+                FOREIGN KEY (material_ticker) REFERENCES items(ticker) ON UPDATE CASCADE
+            );
+        """)
+
         conn.commit()
         cursor.close()
 
@@ -367,3 +461,297 @@ class DatabaseHandler:
         locations = [row[0] for row in cursor.fetchall()]
         cursor.close()
         return locations
+
+    # === Inventory Management Methods ===
+
+    def upsert_player(self, username: str) -> None:
+        """Insert or update a player record."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO players (username) VALUES (%s)
+            ON DUPLICATE KEY UPDATE username = VALUES(username);
+        """, (username,))
+        conn.commit()
+        cursor.close()
+
+    def upsert_planet(self, planet_id: str, identifier: str, name: str, founded_epoch_ms: int = None) -> None:
+        """Insert or update planet information."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO planets (id, identifier, name, founded_epoch_ms) 
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                identifier = VALUES(identifier),
+                name = VALUES(name),
+                founded_epoch_ms = VALUES(founded_epoch_ms);
+        """, (planet_id, identifier, name, founded_epoch_ms))
+        conn.commit()
+        cursor.close()
+
+    def upsert_site(self, site_id: str, planet_id: str, username: str, invested_permits: int = 0,
+                    maximum_permits: int = 3) -> None:
+        """Insert or update site information."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO sites (id, planet_id, username, invested_permits, maximum_permits) 
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                planet_id = VALUES(planet_id),
+                invested_permits = VALUES(invested_permits),
+                maximum_permits = VALUES(maximum_permits);
+        """, (site_id, planet_id, username, invested_permits, maximum_permits))
+        conn.commit()
+        cursor.close()
+
+    def upsert_ship(self, addressable_id: str, name: str, username: str) -> None:
+        """Insert or update ship information."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO ships (addressable_id, name, username) 
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                name = VALUES(name);
+        """, (addressable_id, name, username))
+        conn.commit()
+        cursor.close()
+
+    def upsert_storage_container(self, storage_id: str, addressable_id: str, username: str,
+                                 container_name: str, storage_type: str, weight_capacity: float,
+                                 weight_load: float, volume_capacity: float, volume_load: float,
+                                 fixed_store: bool) -> None:
+        """Insert or update storage container information."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO storage_containers 
+            (storage_id, addressable_id, username, container_name, storage_type, 
+             weight_capacity, weight_load, volume_capacity, volume_load, fixed_store) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                addressable_id = VALUES(addressable_id),
+                container_name = VALUES(container_name),
+                storage_type = VALUES(storage_type),
+                weight_capacity = VALUES(weight_capacity),
+                weight_load = VALUES(weight_load),
+                volume_capacity = VALUES(volume_capacity),
+                volume_load = VALUES(volume_load),
+                fixed_store = VALUES(fixed_store);
+        """, (storage_id, addressable_id, username, container_name, storage_type,
+              weight_capacity, weight_load, volume_capacity, volume_load, fixed_store))
+        conn.commit()
+        cursor.close()
+
+    def clear_inventory_items(self, storage_id: str) -> None:
+        """Clear all inventory items for a specific storage container."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM inventory_items WHERE storage_id = %s;", (storage_id,))
+        conn.commit()
+        cursor.close()
+
+    def upsert_inventory_item(self, storage_id: str, material_id: str, material_ticker: str,
+                              material_name: str, material_category: str, amount: int,
+                              material_weight: float, material_volume: float, total_weight: float,
+                              total_volume: float, material_value: float,
+                              material_value_currency: str = 'CIS') -> None:
+        """Insert or update an inventory item."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO inventory_items 
+            (storage_id, material_id, material_ticker, material_name, material_category, amount, 
+             material_weight, material_volume, total_weight, total_volume, material_value, material_value_currency) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                material_ticker = VALUES(material_ticker),
+                material_name = VALUES(material_name),
+                material_category = VALUES(material_category),
+                amount = VALUES(amount),
+                material_weight = VALUES(material_weight),
+                material_volume = VALUES(material_volume),
+                total_weight = VALUES(total_weight),
+                total_volume = VALUES(total_volume),
+                material_value = VALUES(material_value),
+                material_value_currency = VALUES(material_value_currency);
+        """, (storage_id, material_id, material_ticker, material_name, material_category, amount,
+              material_weight, material_volume, total_weight, total_volume, material_value,
+              material_value_currency))
+        conn.commit()
+        cursor.close()
+
+    def sync_user_inventory_data(self, fio_handler, username: str) -> bool:
+        """
+        Sync all inventory data for a specific user using FIO API.
+        This is the main method that orchestrates the entire inventory sync.
+        """
+        try:
+            print(f"Syncing inventory data for user: {username}")
+
+            # Step 1: Ensure player exists
+            self.upsert_player(username)
+
+            # Step 2: Get storage data
+            storage_data, storage_status = fio_handler.storage(username)
+            if storage_status != 200 or not storage_data:
+                print(f"Failed to get storage data for {username} (Status: {storage_status})")
+                return False
+
+            # Step 3: Get planets and sites data for location resolution
+            planets_data, planets_status = fio_handler.sites_planets(username)
+            location_map = {}  # addressable_id -> planet_name
+
+            if planets_status == 200 and planets_data:
+                for planet_id in planets_data:
+                    sites_data, sites_status = fio_handler.sites(username, planet_id)
+                    if sites_status == 200 and sites_data:
+                        # Handle both single site and multiple sites
+                        sites = sites_data if isinstance(sites_data, list) else [sites_data]
+
+                        for site in sites:
+                            # Store planet info
+                            self.upsert_planet(
+                                planet_id,
+                                site.get('PlanetIdentifier'),
+                                site.get('PlanetName'),
+                                site.get('PlanetFoundedEpochMs')
+                            )
+
+                            # Store site info
+                            site_id = site.get('SiteId')
+                            if site_id:
+                                self.upsert_site(
+                                    site_id, planet_id, username,
+                                    site.get('InvestedPermits', 0),
+                                    site.get('MaximumPermits', 3)
+                                )
+                                location_map[site_id] = site.get('PlanetName')
+
+            # Step 4: Process storage data
+            ships_found = set()  # Track ships we've seen
+
+            for storage in storage_data:
+                addressable_id = storage.get('AddressableId')
+                storage_id = storage.get('StorageId')
+                storage_type = storage.get('Type')
+                container_name = storage.get('Name')
+
+                # Handle ships (they have names and move around)
+                if storage_type in ['SHIP_STORE', 'FTL_FUEL_STORE',
+                                    'STL_FUEL_STORE'] and container_name and container_name != 'None':
+                    if addressable_id not in ships_found:
+                        self.upsert_ship(addressable_id, container_name, username)
+                        ships_found.add(addressable_id)
+
+                # Store storage container info
+                self.upsert_storage_container(
+                    storage_id, addressable_id, username, container_name, storage_type,
+                    storage.get('WeightCapacity', 0), storage.get('WeightLoad', 0),
+                    storage.get('VolumeCapacity', 0), storage.get('VolumeLoad', 0),
+                    storage.get('FixedStore', False)
+                )
+
+                # Clear existing inventory items for this container
+                self.clear_inventory_items(storage_id)
+
+                # Add inventory items
+                storage_items = storage.get('StorageItems', [])
+                for item in storage_items:
+                    # Also ensure the item exists in the items table
+                    self.upsert_item(
+                        item.get('MaterialTicker'),
+                        item.get('MaterialName'),
+                        item.get('MaterialCategory')
+                    )
+
+                    # Add to inventory
+                    self.upsert_inventory_item(
+                        storage_id, item.get('MaterialId'), item.get('MaterialTicker'),
+                        item.get('MaterialName'), item.get('MaterialCategory'),
+                        item.get('MaterialAmount', 0), item.get('MaterialWeight', 0),
+                        item.get('MaterialVolume', 0), item.get('TotalWeight', 0),
+                        item.get('TotalVolume', 0), item.get('MaterialValue', 0),
+                        item.get('MaterialValueCurrency', 'CIS')
+                    )
+
+            print(f"Successfully synced inventory data for {username}")
+            return True
+
+        except Exception as e:
+            print(f"Error syncing inventory data for {username}: {e}")
+            return False
+
+    def get_user_inventory_summary(self, username: str) -> dict:
+            """Get a summary of a user's inventory across all locations."""
+            conn = self._connect()
+            cursor = conn.cursor()
+
+            # Get storage containers with location info
+            cursor.execute("""
+                SELECT 
+                    sc.storage_id, sc.container_name, sc.storage_type,
+                    sc.weight_load, sc.weight_capacity, sc.volume_load, sc.volume_capacity,
+                    p.name as planet_name, s.name as ship_name
+                FROM storage_containers sc
+                LEFT JOIN sites site ON sc.addressable_id = site.id
+                LEFT JOIN planets p ON site.planet_id = p.id
+                LEFT JOIN ships s ON sc.addressable_id = s.addressable_id
+                WHERE sc.username = %s
+                ORDER BY sc.storage_type, sc.container_name;
+            """, (username,))
+
+            containers = cursor.fetchall()
+
+            # Get inventory items count by container
+            cursor.execute("""
+                SELECT sc.storage_id, COUNT(ii.id) as item_count, SUM(ii.amount) as total_items
+                FROM storage_containers sc
+                LEFT JOIN inventory_items ii ON sc.storage_id = ii.storage_id
+                WHERE sc.username = %s
+                GROUP BY sc.storage_id;
+            """, (username,))
+
+            item_counts = {row[0]: {'unique_items': row[1], 'total_quantity': row[2]} for row in cursor.fetchall()}
+            cursor.close()
+
+            summary = {
+                'username': username,
+                'containers': [],
+                'totals': {
+                    'containers': len(containers),
+                    'total_weight_used': 0,
+                    'total_weight_capacity': 0,
+                    'total_volume_used': 0,
+                    'total_volume_capacity': 0
+                }
+            }
+
+            for container in containers:
+                storage_id, container_name, storage_type, weight_load, weight_capacity, volume_load, volume_capacity, planet_name, ship_name = container
+
+                location = planet_name or ship_name or "Unknown"
+                counts = item_counts.get(storage_id, {'unique_items': 0, 'total_quantity': 0})
+
+                summary['containers'].append({
+                    'storage_id': storage_id,
+                    'name': container_name,
+                    'type': storage_type,
+                    'location': location,
+                    'weight_used': float(weight_load),
+                    'weight_capacity': float(weight_capacity),
+                    'volume_used': float(volume_load),
+                    'volume_capacity': float(volume_capacity),
+                    'unique_items': counts['unique_items'],
+                    'total_quantity': counts['total_quantity'] or 0
+                })
+
+                # Add to totals
+                summary['totals']['total_weight_used'] += float(weight_load)
+                summary['totals']['total_weight_capacity'] += float(weight_capacity)
+                summary['totals']['total_volume_used'] += float(volume_load)
+                summary['totals']['total_volume_capacity'] += float(volume_capacity)
+
+            return summary

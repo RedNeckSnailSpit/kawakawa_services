@@ -5,9 +5,9 @@ import sys
 from datetime import datetime, timedelta
 from modules.database_handler import DatabaseHandler
 from modules.google_sheets_handler import GoogleSheetsHandler
+from modules.fio_handler import FIOHandler
 from modules.constants import (
-    APP_NAME, APP_VERSION, APP_STATE,
-    CONFIG_HARD_DROP, DB_HARD_DROP, DB_SOFT_DROP, DB_TABLES
+    APP_NAME, APP_VERSION, APP_STATE
 )
 
 
@@ -18,6 +18,7 @@ class SyncScheduler:
         self.running = True
         self.db = None
         self.sheets_handler = None
+        self.fio_handler = None
         self.last_sync_time = None
 
         # Set up signal handlers for graceful shutdown
@@ -26,7 +27,7 @@ class SyncScheduler:
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully."""
-        print(f"\n📴 Received signal {signum}, shutting down gracefully...")
+        print(f"\n🔴 Received signal {signum}, shutting down gracefully...")
         self.running = False
 
     def _get_next_midnight(self):
@@ -71,7 +72,7 @@ class SyncScheduler:
         """Main loop for continuous sync operation."""
         print(f"🚀 Starting continuous sync mode...")
         print(f"📅 Sync will occur daily at midnight (server time)")
-        print(f"⏹️  Press Ctrl+C to stop gracefully\n")
+        print(f"ℹ️ Press Ctrl+C to stop gracefully\n")
 
         # Run initial sync on startup
         print("🔄 Running initial sync...")
@@ -134,15 +135,28 @@ class SyncScheduler:
                 self.db = DatabaseHandler()
             if not self.sheets_handler:
                 self.sheets_handler = GoogleSheetsHandler()
+            if not self.fio_handler:
+                print("🌐 Initializing FIO API connection...")
+                self.fio_handler = FIOHandler()
+                if not self.fio_handler.is_authenticated():
+                    print("❌ FIO API authentication failed")
+                    return False
+                print(f"✅ FIO API connected as: {self.fio_handler.get_username()}")
 
-            return sync_sheets_data(self.sheets_handler, self.db)
+            # Sync Google Sheets data
+            sheets_success = sync_sheets_data(self.sheets_handler, self.db)
+
+            # Sync inventory data
+            inventory_success = sync_inventory_data(self.fio_handler, self.db)
+
+            return sheets_success and inventory_success
+
         except Exception as e:
             print(f"❌ Sync operation failed: {e}")
             if should_enable_dev_features():
                 import traceback
                 traceback.print_exc()
             return False
-
 
 def get_version_string(version, state):
     """Return version string with suffix based on state."""
@@ -156,12 +170,10 @@ def get_version_string(version, state):
     else:
         return f"v{version}"
 
-
 def should_enable_dev_features():
     """Check if development features should be enabled."""
     environment = os.getenv("ENVIRONMENT", "").upper()
     return APP_STATE == "dev" and environment == "DEV"
-
 
 def get_stored_settings(db):
     """Retrieve stored Google Sheets settings from database."""
@@ -189,7 +201,6 @@ def get_stored_settings(db):
             'shipping_sheet': None
         }
 
-
 def save_sheets_settings(db, spreadsheet_id, prices_sheet, shipping_sheet):
     """Save Google Sheets settings to database."""
     try:
@@ -199,7 +210,6 @@ def save_sheets_settings(db, spreadsheet_id, prices_sheet, shipping_sheet):
         print("💾 Settings saved to database")
     except Exception as e:
         print(f"⚠️  Could not save settings: {e}")
-
 
 def sync_sheets_data(sheets_handler, db):
     """Handle Google Sheets synchronization."""
@@ -259,7 +269,6 @@ def sync_sheets_data(sheets_handler, db):
             traceback.print_exc()
         return False
 
-
 def run_setup_mode():
     """Interactive setup mode for configuring Google Sheets settings."""
     print("🔧 Setup Mode")
@@ -310,6 +319,291 @@ def run_setup_mode():
                     print("\n❌ Test sync failed. Please check your settings.")
         else:
             print("\n❌ No spreadsheet ID provided. Settings not updated.")
+
+    except Exception as e:
+        print(f"\n❌ Setup failed: {e}")
+        if should_enable_dev_features():
+            import traceback
+            traceback.print_exc()
+
+def sync_inventory_data(fio_handler, db):
+    """Handle inventory synchronization for tracked users."""
+    print("\n📦 Inventory Synchronization")
+    print("=" * 50)
+
+    # Get list of users to sync
+    tracked_users = get_tracked_users(db)
+
+    if not tracked_users:
+        print("📋 No users configured for tracking.")
+        setup_users = input("Would you like to add users to track? (y/N): ").strip().lower()
+
+        if setup_users == 'y':
+            users_to_add = input("Enter usernames to track (comma-separated): ").strip()
+            if users_to_add:
+                new_users = [u.strip() for u in users_to_add.split(',') if u.strip()]
+                for user in new_users:
+                    save_tracked_user(db, user)
+                    print(f"✅ Added user: {user}")
+                tracked_users = new_users
+            else:
+                print("❌ No users provided, skipping inventory sync")
+                return False
+        else:
+            print("⏭️ Skipping inventory sync")
+            return False
+
+    print(f"📋 Syncing inventory for {len(tracked_users)} users...")
+
+    success_count = 0
+    total_users = len(tracked_users)
+
+    for i, username in enumerate(tracked_users, 1):
+        print(f"\n👤 [{i}/{total_users}] Syncing: {username}")
+        print("-" * 30)
+
+        try:
+            success = db.sync_user_inventory_data(fio_handler, username)
+
+            if success:
+                print(f"✅ {username}: Inventory synced successfully")
+
+                # Show brief summary
+                summary = db.get_user_inventory_summary(username)
+                print(f"   📊 {summary['totals']['containers']} containers")
+                print(
+                    f"   🏪 Weight: {summary['totals']['total_weight_used']:.1f}/{summary['totals']['total_weight_capacity']:.1f}")
+                print(
+                    f"   📦 Volume: {summary['totals']['total_volume_used']:.1f}/{summary['totals']['total_volume_capacity']:.1f}")
+
+                success_count += 1
+            else:
+                print(f"❌ {username}: Sync failed")
+
+        except Exception as e:
+            print(f"❌ {username}: Error during sync - {e}")
+            if should_enable_dev_features():
+                import traceback
+                traceback.print_exc()
+
+    print(f"\n📈 Inventory Sync Results:")
+    print("=" * 30)
+    print(f"✅ Successful: {success_count}/{total_users}")
+    print(f"❌ Failed: {total_users - success_count}/{total_users}")
+
+    return success_count > 0
+
+def get_tracked_users(db):
+    """Get list of users to track from database settings."""
+    try:
+        users_data = db.get_setting('tracked_users')
+        if users_data:
+            users_str = users_data.decode('utf-8')
+            return [u.strip() for u in users_str.split(',') if u.strip()]
+        return []
+    except Exception:
+        return []
+
+def save_tracked_user(db, username):
+    """Add a user to the tracked users list."""
+    try:
+        existing_users = get_tracked_users(db)
+        if username not in existing_users:
+            existing_users.append(username)
+            users_str = ','.join(existing_users)
+            db.upsert_setting('tracked_users', users_str.encode('utf-8'))
+    except Exception as e:
+        print(f"Error saving tracked user {username}: {e}")
+
+def remove_tracked_user(db, username):
+    """Remove a user from the tracked users list."""
+    try:
+        existing_users = get_tracked_users(db)
+        if username in existing_users:
+            existing_users.remove(username)
+            users_str = ','.join(existing_users)
+            db.upsert_setting('tracked_users', users_str.encode('utf-8'))
+            return True
+        return False
+    except Exception as e:
+        print(f"Error removing tracked user {username}: {e}")
+        return False
+
+def manage_tracked_users_menu(db):
+    """Interactive menu to manage tracked users."""
+    print("\n👥 Manage Tracked Users")
+    print("=" * 50)
+
+    while True:
+        tracked_users = get_tracked_users(db)
+
+        print(f"\nCurrently tracking {len(tracked_users)} users:")
+        for i, user in enumerate(tracked_users, 1):
+            print(f"  {i}. {user}")
+
+        if not tracked_users:
+            print("  (No users currently tracked)")
+
+        print(f"\nOptions:")
+        print("  1. Add user")
+        print("  2. Remove user")
+        print("  3. View user inventory summary")
+        print("  4. Return to main menu")
+
+        choice = input("\nEnter choice (1-4): ").strip()
+
+        if choice == '1':
+            username = input("Enter username to add: ").strip()
+            if username:
+                save_tracked_user(db, username)
+                print(f"✅ Added {username} to tracked users")
+            else:
+                print("❌ Invalid username")
+
+        elif choice == '2':
+            if not tracked_users:
+                print("❌ No users to remove")
+                continue
+
+            print("Select user to remove:")
+            for i, user in enumerate(tracked_users, 1):
+                print(f"  {i}. {user}")
+
+            try:
+                selection = int(input("Enter number: ").strip()) - 1
+                if 0 <= selection < len(tracked_users):
+                    user_to_remove = tracked_users[selection]
+                    if remove_tracked_user(db, user_to_remove):
+                        print(f"✅ Removed {user_to_remove} from tracked users")
+                    else:
+                        print(f"❌ Failed to remove {user_to_remove}")
+                else:
+                    print("❌ Invalid selection")
+            except ValueError:
+                print("❌ Please enter a valid number")
+
+        elif choice == '3':
+            if not tracked_users:
+                print("❌ No users to view")
+                continue
+
+            print("Select user to view:")
+            for i, user in enumerate(tracked_users, 1):
+                print(f"  {i}. {user}")
+
+            try:
+                selection = int(input("Enter number: ").strip()) - 1
+                if 0 <= selection < len(tracked_users):
+                    username = tracked_users[selection]
+                    summary = db.get_user_inventory_summary(username)
+
+                    print(f"\n📊 Inventory Summary for {username}")
+                    print("=" * 40)
+                    print(f"Total Containers: {summary['totals']['containers']}")
+                    print(
+                        f"Total Weight: {summary['totals']['total_weight_used']:.1f}/{summary['totals']['total_weight_capacity']:.1f}")
+                    print(
+                        f"Total Volume: {summary['totals']['total_volume_used']:.1f}/{summary['totals']['total_volume_capacity']:.1f}")
+
+                    print(f"\n📦 Storage Locations:")
+                    for container in summary['containers']:
+                        print(f"  🏪 {container['type']} at {container['location']}")
+                        if container['name'] and container['name'] != 'None':
+                            print(f"      Name: {container['name']}")
+                        print(f"      Weight: {container['weight_used']:.1f}/{container['weight_capacity']:.1f}")
+                        print(f"      Volume: {container['volume_used']:.1f}/{container['volume_capacity']:.1f}")
+                        print(f"      Items: {container['unique_items']} types, {container['total_quantity']} total")
+                        print()
+                else:
+                    print("❌ Invalid selection")
+            except ValueError:
+                print("❌ Please enter a valid number")
+
+        elif choice == '4':
+            break
+        else:
+            print("❌ Invalid choice. Please enter 1-4.")
+
+def run_inventory_setup_mode():
+    """Interactive setup mode for configuring inventory tracking."""
+    print("📦 Inventory Setup Mode")
+    print("=" * 50)
+
+    try:
+        # Initialize database
+        print("🗄️ Initializing database connection...")
+        db = DatabaseHandler()
+
+        # Initialize FIO handler
+        print("🌐 Initializing FIO API connection...")
+        fio_handler = FIOHandler()
+        if not fio_handler.is_authenticated():
+            print("❌ FIO API authentication failed")
+            return
+        print(f"✅ FIO API connected as: {fio_handler.get_username()}")
+
+        # Show current tracked users
+        tracked_users = get_tracked_users(db)
+        if tracked_users:
+            print(f"\n👥 Currently tracking {len(tracked_users)} users:")
+            for user in tracked_users:
+                print(f"  • {user}")
+        else:
+            print("\n👥 No users currently tracked")
+
+        # Menu loop
+        while True:
+            print("\n📋 Inventory Setup Options:")
+            print("  1. Manage tracked users")
+            print("  2. Run inventory sync for all users")
+            print("  3. Run inventory sync for specific user")
+            print("  4. Test sync with current FIO user")
+            print("  5. Return to main menu")
+
+            choice = input("\nEnter choice (1-5): ").strip()
+
+            if choice == '1':
+                manage_tracked_users_menu(db)
+
+            elif choice == '2':
+                success = sync_inventory_data(fio_handler, db)
+                if success:
+                    print("\n✅ Inventory sync completed!")
+                else:
+                    print("\n❌ Inventory sync failed!")
+
+            elif choice == '3':
+                username = input("Enter username to sync: ").strip()
+                if username:
+                    print(f"🔄 Syncing inventory for {username}...")
+                    success = db.sync_user_inventory_data(fio_handler, username)
+                    if success:
+                        print(f"✅ Successfully synced inventory for {username}")
+                        summary = db.get_user_inventory_summary(username)
+                        print(f"📊 Found {summary['totals']['containers']} storage containers")
+                    else:
+                        print(f"❌ Failed to sync inventory for {username}")
+                else:
+                    print("❌ No username provided")
+
+            elif choice == '4':
+                current_user = fio_handler.get_username()
+                if current_user:
+                    print(f"🔄 Testing sync with authenticated user: {current_user}")
+                    success = db.sync_user_inventory_data(fio_handler, current_user)
+                    if success:
+                        print(f"✅ Test sync successful for {current_user}")
+                        summary = db.get_user_inventory_summary(current_user)
+                        print(f"📊 Found {summary['totals']['containers']} storage containers")
+                    else:
+                        print(f"❌ Test sync failed for {current_user}")
+                else:
+                    print("❌ Could not get current user")
+
+            elif choice == '5':
+                break
+            else:
+                print("❌ Invalid choice. Please enter 1-5.")
 
     except Exception as e:
         print(f"\n❌ Setup failed: {e}")

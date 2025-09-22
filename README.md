@@ -85,4 +85,11 @@ python main.py   # or `python3 main.py` depending on your environment
 
 ---
 
+### Extra
+- Use --inventory as a startup parameter to manage tracked users
+- Delete config.json to reset database connection details
+- Only database connection details are stored in config.json, other settings are stored in the `settings` table in MariaDB/MySQL 
+
+---
+
 © 2025 RedNeckSnailSpit. Licensed under GPL v3.
