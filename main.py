@@ -347,7 +347,7 @@ def sync_inventory_data(fio_handler, db):
             if users_to_add:
                 new_users = [u.strip() for u in users_to_add.split(',') if u.strip()]
                 for user in new_users:
-                    save_tracked_user(db, user)
+                    db.upsert_player(user)
                     print(f"✅ Added user: {user}")
                 tracked_users = new_users
             else:
@@ -398,40 +398,11 @@ def sync_inventory_data(fio_handler, db):
     return success_count > 0
 
 def get_tracked_users(db):
-    """Get list of users to track from database settings."""
+    """Get list of users to track from the players table."""
     try:
-        users_data = db.get_setting('tracked_users')
-        if users_data:
-            users_str = users_data.decode('utf-8')
-            return [u.strip() for u in users_str.split(',') if u.strip()]
-        return []
+        return db.get_all_players()
     except Exception:
         return []
-
-def save_tracked_user(db, username):
-    """Add a user to the tracked users list."""
-    try:
-        existing_users = get_tracked_users(db)
-        if username not in existing_users:
-            existing_users.append(username)
-            users_str = ','.join(existing_users)
-            db.upsert_setting('tracked_users', users_str.encode('utf-8'))
-    except Exception as e:
-        print(f"Error saving tracked user {username}: {e}")
-
-def remove_tracked_user(db, username):
-    """Remove a user from the tracked users list."""
-    try:
-        existing_users = get_tracked_users(db)
-        if username in existing_users:
-            existing_users.remove(username)
-            users_str = ','.join(existing_users)
-            db.upsert_setting('tracked_users', users_str.encode('utf-8'))
-            return True
-        return False
-    except Exception as e:
-        print(f"Error removing tracked user {username}: {e}")
-        return False
 
 def sync_production_data(fio_handler, db):
     """Handle production synchronization for tracked users."""
@@ -544,7 +515,7 @@ def manage_tracked_users_menu(db):
         if choice == '1':
             username = input("Enter username to add: ").strip()
             if username:
-                save_tracked_user(db, username)
+                db.upsert_player(user)
                 print(f"✅ Added {username} to tracked users")
             else:
                 print("❌ Invalid username")
@@ -562,7 +533,7 @@ def manage_tracked_users_menu(db):
                 selection = int(input("Enter number: ").strip()) - 1
                 if 0 <= selection < len(tracked_users):
                     user_to_remove = tracked_users[selection]
-                    if remove_tracked_user(db, user_to_remove):
+                    if db.delete_player(user_to_remove):
                         print(f"✅ Removed {user_to_remove} from tracked users")
                     else:
                         print(f"❌ Failed to remove {user_to_remove}")

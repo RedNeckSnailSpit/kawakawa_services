@@ -1122,3 +1122,46 @@ class DatabaseHandler:
             summary['totals']['avg_condition'] = total_condition / len(facilities)
 
         return summary
+
+    def get_all_players(self):
+        """Get all players from the players table."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT username FROM players ORDER BY username")
+        rows = cursor.fetchall()
+        cursor.close()
+        return [row[0] for row in rows] if rows else []
+
+    def get_player(self, username: str):
+        """Get a specific player by username."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, last_updated, created_at FROM players WHERE username = %s", (username,))
+        row = cursor.fetchone()
+        cursor.close()
+        if row:
+            return {
+                'username': row[0],
+                'last_updated': row[1],
+                'created_at': row[2]
+            }
+        return None
+
+    def delete_player(self, username: str) -> bool:
+        """Delete a player from the players table. Returns True if deleted, False if not found."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM players WHERE username = %s", (username,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        cursor.close()
+        return deleted
+
+    def player_exists(self, username: str) -> bool:
+        """Check if a player exists in the players table."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM players WHERE username = %s LIMIT 1", (username,))
+        exists = cursor.fetchone() is not None
+        cursor.close()
+        return exists
