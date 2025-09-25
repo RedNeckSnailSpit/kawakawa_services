@@ -5,6 +5,7 @@ Backend services for **Kawakawa Corporation**, providing automation and integrat
 - Sync item prices to the database
 - Sync shipping prices to the database
 - Sync user inventory data to the database
+- Sync user production data to the database
 - Planned: Discord & Telegram bots for cross-platform notifications and commands  
 
 This project serves as the core backend logic for Kawakawa’s internal tools.

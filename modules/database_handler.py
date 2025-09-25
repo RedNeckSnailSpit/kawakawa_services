@@ -216,6 +216,83 @@ class DatabaseHandler:
             );
         """)
 
+        # Production facilities table
+        cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS production_facilities (
+                        production_line_id VARCHAR(36) PRIMARY KEY,
+                        site_id VARCHAR(36),
+                        planet_id VARCHAR(36),
+                        planet_natural_id VARCHAR(50),
+                        planet_name VARCHAR(255),
+                        username VARCHAR(255) NOT NULL,
+                        facility_type VARCHAR(100),
+                        capacity INT DEFAULT 0,
+                        efficiency DECIMAL(6,5) DEFAULT 0,
+                        facility_condition DECIMAL(6,5) DEFAULT 0,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (username) REFERENCES players(username) ON UPDATE CASCADE,
+                        FOREIGN KEY (site_id) REFERENCES sites(id) ON UPDATE CASCADE,
+                        FOREIGN KEY (planet_id) REFERENCES planets(id) ON UPDATE CASCADE
+                    );
+                """)
+
+        # Production orders table
+        cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS production_orders (
+                        order_id VARCHAR(36) PRIMARY KEY,
+                        production_line_id VARCHAR(36) NOT NULL,
+                        username VARCHAR(255) NOT NULL,
+                        created_epoch_ms BIGINT,
+                        started_epoch_ms BIGINT,
+                        completion_epoch_ms BIGINT,
+                        duration_ms BIGINT,
+                        last_updated_epoch_ms BIGINT,
+                        completed_percentage DECIMAL(8,7) DEFAULT 0,
+                        is_halted BOOLEAN DEFAULT FALSE,
+                        recurring BOOLEAN DEFAULT FALSE,
+                        standard_recipe_name VARCHAR(255),
+                        production_fee DECIMAL(10,4) DEFAULT 0,
+                        production_fee_currency VARCHAR(3) DEFAULT 'NCC',
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (production_line_id) REFERENCES production_facilities(production_line_id) ON DELETE CASCADE,
+                        FOREIGN KEY (username) REFERENCES players(username) ON UPDATE CASCADE
+                    );
+                """)
+
+        # Production order inputs table (materials consumed)
+        cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS production_order_inputs (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        order_id VARCHAR(36) NOT NULL,
+                        material_id VARCHAR(36),
+                        material_ticker VARCHAR(10),
+                        material_name VARCHAR(255),
+                        amount INT DEFAULT 0,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (order_id) REFERENCES production_orders(order_id) ON DELETE CASCADE,
+                        FOREIGN KEY (material_ticker) REFERENCES items(ticker) ON UPDATE CASCADE
+                    );
+                """)
+
+        # Production order outputs table (materials produced)
+        cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS production_order_outputs (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        order_id VARCHAR(36) NOT NULL,
+                        material_id VARCHAR(36),
+                        material_ticker VARCHAR(10),
+                        material_name VARCHAR(255),
+                        amount INT DEFAULT 0,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (order_id) REFERENCES production_orders(order_id) ON DELETE CASCADE,
+                        FOREIGN KEY (material_ticker) REFERENCES items(ticker) ON UPDATE CASCADE
+                    );
+                """);
+
         conn.commit()
         cursor.close()
 
@@ -755,3 +832,293 @@ class DatabaseHandler:
                 summary['totals']['total_volume_capacity'] += float(volume_capacity)
 
             return summary
+
+            # === Production Management Methods ===
+
+    def upsert_production_facility(self, production_line_id: str, site_id: str, planet_id: str,
+                                   planet_natural_id: str, planet_name: str, username: str,
+                                   facility_type: str, capacity: int, efficiency: float,
+                                   condition: float) -> None:
+        """Insert or update a production facility."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+                INSERT INTO production_facilities 
+                (production_line_id, site_id, planet_id, planet_natural_id, planet_name, username, 
+                 facility_type, capacity, efficiency, facility_condition) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE 
+                    site_id = VALUES(site_id),
+                    planet_id = VALUES(planet_id),
+                    planet_natural_id = VALUES(planet_natural_id),
+                    planet_name = VALUES(planet_name),
+                    facility_type = VALUES(facility_type),
+                    capacity = VALUES(capacity),
+                    efficiency = VALUES(efficiency),
+                    facility_condition = VALUES(facility_condition);
+            """, (production_line_id, site_id, planet_id, planet_natural_id, planet_name, username,
+                  facility_type, capacity, efficiency, condition))
+        conn.commit()
+        cursor.close()
+
+    def clear_production_orders(self, production_line_id: str) -> None:
+        """Clear all production orders for a specific production line."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM production_orders WHERE production_line_id = %s;", (production_line_id,))
+        conn.commit()
+        cursor.close()
+
+    def upsert_production_order(self, order_id: str, production_line_id: str, username: str,
+                                created_epoch_ms: int = None, started_epoch_ms: int = None,
+                                completion_epoch_ms: int = None, duration_ms: int = None,
+                                last_updated_epoch_ms: int = None, completed_percentage: float = 0,
+                                is_halted: bool = False, recurring: bool = False,
+                                standard_recipe_name: str = None, production_fee: float = 0,
+                                production_fee_currency: str = 'NCC') -> None:
+        """Insert or update a production order."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+                INSERT INTO production_orders 
+                (order_id, production_line_id, username, created_epoch_ms, started_epoch_ms, 
+                 completion_epoch_ms, duration_ms, last_updated_epoch_ms, completed_percentage, 
+                 is_halted, recurring, standard_recipe_name, production_fee, production_fee_currency) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE 
+                    created_epoch_ms = VALUES(created_epoch_ms),
+                    started_epoch_ms = VALUES(started_epoch_ms),
+                    completion_epoch_ms = VALUES(completion_epoch_ms),
+                    duration_ms = VALUES(duration_ms),
+                    last_updated_epoch_ms = VALUES(last_updated_epoch_ms),
+                    completed_percentage = VALUES(completed_percentage),
+                    is_halted = VALUES(is_halted),
+                    recurring = VALUES(recurring),
+                    standard_recipe_name = VALUES(standard_recipe_name),
+                    production_fee = VALUES(production_fee),
+                    production_fee_currency = VALUES(production_fee_currency);
+            """, (order_id, production_line_id, username, created_epoch_ms, started_epoch_ms,
+                  completion_epoch_ms, duration_ms, last_updated_epoch_ms, completed_percentage,
+                  is_halted, recurring, standard_recipe_name, production_fee, production_fee_currency))
+        conn.commit()
+        cursor.close()
+
+    def clear_production_order_inputs(self, order_id: str) -> None:
+        """Clear all input materials for a production order."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM production_order_inputs WHERE order_id = %s;", (order_id,))
+        conn.commit()
+        cursor.close()
+
+    def clear_production_order_outputs(self, order_id: str) -> None:
+        """Clear all output materials for a production order."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM production_order_outputs WHERE order_id = %s;", (order_id,))
+        conn.commit()
+        cursor.close()
+
+    def upsert_production_order_input(self, order_id: str, material_id: str, material_ticker: str,
+                                      material_name: str, amount: int) -> None:
+        """Insert production order input material."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+                INSERT INTO production_order_inputs 
+                (order_id, material_id, material_ticker, material_name, amount) 
+                VALUES (%s, %s, %s, %s, %s);
+            """, (order_id, material_id, material_ticker, material_name, amount))
+        conn.commit()
+        cursor.close()
+
+    def upsert_production_order_output(self, order_id: str, material_id: str, material_ticker: str,
+                                       material_name: str, amount: int) -> None:
+        """Insert production order output material."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+                INSERT INTO production_order_outputs 
+                (order_id, material_id, material_ticker, material_name, amount) 
+                VALUES (%s, %s, %s, %s, %s);
+            """, (order_id, material_id, material_ticker, material_name, amount))
+        conn.commit()
+        cursor.close()
+
+    def sync_user_production_data(self, fio_handler, username: str) -> bool:
+        """
+        Sync all production data for a specific user using FIO API.
+        """
+        try:
+            print(f"Syncing production data for user: {username}")
+
+            # Ensure player exists
+            self.upsert_player(username)
+
+            # Get production data
+            production_data, production_status = fio_handler.production(username)
+            if production_status != 200 or not production_data:
+                print(f"Failed to get production data for {username} (Status: {production_status})")
+                return False
+
+            # Process each production facility
+            for facility in production_data:
+                production_line_id = facility.get('ProductionLineId')
+                site_id = facility.get('SiteId')
+                planet_id = facility.get('PlanetId')
+                planet_natural_id = facility.get('PlanetNaturalId')
+                planet_name = facility.get('PlanetName')
+                facility_type = facility.get('Type')
+                capacity = facility.get('Capacity', 0)
+                efficiency = facility.get('Efficiency', 0)
+                condition = facility.get('Condition', 0)
+
+                # Store facility info
+                self.upsert_production_facility(
+                    production_line_id, site_id, planet_id, planet_natural_id,
+                    planet_name, username, facility_type, capacity, efficiency, condition
+                )
+
+                # Clear existing orders for this facility
+                self.clear_production_orders(production_line_id)
+
+                # Process orders
+                orders = facility.get('Orders', [])
+                for order in orders:
+                    order_id = order.get('ProductionLineOrderId')
+
+                    # Store order info
+                    self.upsert_production_order(
+                        order_id, production_line_id, username,
+                        order.get('CreatedEpochMs'),
+                        order.get('StartedEpochMs'),
+                        order.get('CompletionEpochMs'),
+                        order.get('DurationMs'),
+                        order.get('LastUpdatedEpochMs'),
+                        order.get('CompletedPercentage', 0),
+                        order.get('IsHalted', False),
+                        order.get('Recurring', False),
+                        order.get('StandardRecipeName'),
+                        order.get('ProductionFee', 0),
+                        order.get('ProductionFeeCurrency', 'NCC')
+                    )
+
+                    # Clear and add input materials
+                    self.clear_production_order_inputs(order_id)
+                    inputs = order.get('Inputs', [])
+                    for input_material in inputs:
+                        # Ensure material exists in items table
+                        self.upsert_item(
+                            input_material.get('MaterialTicker'),
+                            input_material.get('MaterialName'),
+                            input_material.get('MaterialCategory')
+                        )
+
+                        self.upsert_production_order_input(
+                            order_id,
+                            input_material.get('MaterialId'),
+                            input_material.get('MaterialTicker'),
+                            input_material.get('MaterialName'),
+                            input_material.get('Amount', 0)
+                        )
+
+                    # Clear and add output materials
+                    self.clear_production_order_outputs(order_id)
+                    outputs = order.get('Outputs', [])
+                    for output_material in outputs:
+                        # Ensure material exists in items table
+                        self.upsert_item(
+                            output_material.get('MaterialTicker'),
+                            output_material.get('MaterialName'),
+                            output_material.get('MaterialCategory')
+                        )
+
+                        self.upsert_production_order_output(
+                            order_id,
+                            output_material.get('MaterialId'),
+                            output_material.get('MaterialTicker'),
+                            output_material.get('MaterialName'),
+                            output_material.get('Amount', 0)
+                        )
+
+            print(f"Successfully synced production data for {username}")
+            return True
+
+        except Exception as e:
+            print(f"Error syncing production data for {username}: {e}")
+            return False
+
+    def get_user_production_summary(self, username: str) -> dict:
+        """Get a summary of a user's production facilities and orders."""
+        conn = self._connect()
+        cursor = conn.cursor()
+
+        # Get production facilities
+        cursor.execute("""
+                SELECT production_line_id, planet_name, planet_natural_id, facility_type, 
+                       capacity, efficiency, facility_condition
+                FROM production_facilities 
+                WHERE username = %s
+                ORDER BY planet_name, facility_type;
+            """, (username,))
+
+        facilities = cursor.fetchall()
+
+        # Get order counts by facility
+        cursor.execute("""
+                SELECT pf.production_line_id, COUNT(po.order_id) as order_count,
+                       SUM(CASE WHEN po.completed_percentage < 1.0 THEN 1 ELSE 0 END) as active_orders,
+                       AVG(po.completed_percentage) as avg_progress
+                FROM production_facilities pf
+                LEFT JOIN production_orders po ON pf.production_line_id = po.production_line_id
+                WHERE pf.username = %s
+                GROUP BY pf.production_line_id;
+            """, (username,))
+
+        order_stats = {row[0]: {'total_orders': row[1], 'active_orders': row[2], 'avg_progress': row[3]}
+                       for row in cursor.fetchall()}
+
+        cursor.close()
+
+        summary = {
+            'username': username,
+            'facilities': [],
+            'totals': {
+                'total_facilities': len(facilities),
+                'total_orders': 0,
+                'active_orders': 0,
+                'avg_efficiency': 0,
+                'avg_condition': 0
+            }
+        }
+
+        total_efficiency = 0
+        total_condition = 0
+
+        for facility in facilities:
+            production_line_id, planet_name, planet_natural_id, facility_type, capacity, efficiency, condition = facility
+            stats = order_stats.get(production_line_id, {'total_orders': 0, 'active_orders': 0, 'avg_progress': 0})
+
+            summary['facilities'].append({
+                'production_line_id': production_line_id,
+                'planet_name': planet_name,
+                'planet_natural_id': planet_natural_id,
+                'facility_type': facility_type,
+                'capacity': capacity,
+                'efficiency': float(efficiency),
+                'condition': float(condition),
+                'total_orders': stats['total_orders'],
+                'active_orders': stats['active_orders'],
+                'avg_progress': float(stats['avg_progress']) if stats['avg_progress'] else 0
+            })
+
+            summary['totals']['total_orders'] += stats['total_orders']
+            summary['totals']['active_orders'] += stats['active_orders']
+            total_efficiency += float(efficiency)
+            total_condition += float(condition)
+
+        if len(facilities) > 0:
+            summary['totals']['avg_efficiency'] = total_efficiency / len(facilities)
+            summary['totals']['avg_condition'] = total_condition / len(facilities)
+
+        return summary

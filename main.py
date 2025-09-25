@@ -149,7 +149,10 @@ class SyncScheduler:
             # Sync inventory data
             inventory_success = sync_inventory_data(self.fio_handler, self.db)
 
-            return sheets_success and inventory_success
+            # Sync production data
+            production_success = sync_production_data(self.fio_handler, self.db)
+
+            return sheets_success and inventory_success and production_success
 
         except Exception as e:
             print(f"❌ Sync operation failed: {e}")
@@ -157,6 +160,7 @@ class SyncScheduler:
                 import traceback
                 traceback.print_exc()
             return False
+
 
 def get_version_string(version, state):
     """Return version string with suffix based on state."""
@@ -429,6 +433,90 @@ def remove_tracked_user(db, username):
         print(f"Error removing tracked user {username}: {e}")
         return False
 
+def sync_production_data(fio_handler, db):
+    """Handle production synchronization for tracked users."""
+    print("\n⚗️ Production Synchronization")
+    print("=" * 50)
+
+    # Get list of users to sync
+    tracked_users = get_tracked_users(db)
+
+    if not tracked_users:
+        print("📋 No users configured for tracking.")
+        print("⏭️ Skipping production sync (use --inventory to setup users)")
+        return False
+
+    print(f"📋 Syncing production data for {len(tracked_users)} users...")
+
+    success_count = 0
+    total_users = len(tracked_users)
+
+    for i, username in enumerate(tracked_users, 1):
+        print(f"\n👤 [{i}/{total_users}] Syncing production: {username}")
+        print("-" * 30)
+
+        try:
+            success = db.sync_user_production_data(fio_handler, username)
+
+            if success:
+                print(f"✅ {username}: Production synced successfully")
+
+                # Show brief summary
+                summary = db.get_user_production_summary(username)
+                print(f"   🏭 {summary['totals']['total_facilities']} facilities")
+                print(f"   📋 {summary['totals']['total_orders']} orders ({summary['totals']['active_orders']} active)")
+                print(f"   ⚡ Avg efficiency: {summary['totals']['avg_efficiency']:.1%}")
+                print(f"   🔧 Avg condition: {summary['totals']['avg_condition']:.1%}")
+
+                success_count += 1
+            else:
+                print(f"❌ {username}: Production sync failed")
+
+        except Exception as e:
+            print(f"❌ {username}: Error during production sync - {e}")
+            if should_enable_dev_features():
+                import traceback
+                traceback.print_exc()
+
+    print(f"\n📈 Production Sync Results:")
+    print("=" * 30)
+    print(f"✅ Successful: {success_count}/{total_users}")
+    print(f"❌ Failed: {total_users - success_count}/{total_users}")
+
+    return success_count > 0
+
+def view_user_production_summary(db, username):
+    """Display detailed production summary for a user."""
+    summary = db.get_user_production_summary(username)
+
+    print(f"\n🏭 Production Summary for {username}")
+    print("=" * 40)
+    print(f"Total Facilities: {summary['totals']['total_facilities']}")
+    print(f"Total Orders: {summary['totals']['total_orders']} ({summary['totals']['active_orders']} active)")
+    print(f"Average Efficiency: {summary['totals']['avg_efficiency']:.1%}")
+    print(f"Average Condition: {summary['totals']['avg_condition']:.1%}")
+
+    if summary['facilities']:
+        print(f"\n🏭 Production Facilities:")
+
+        # Group by planet for better display
+        by_planet = {}
+        for facility in summary['facilities']:
+            planet = facility['planet_name']
+            if planet not in by_planet:
+                by_planet[planet] = []
+            by_planet[planet].append(facility)
+
+        for planet, facilities in by_planet.items():
+            print(f"\n  🌍 {planet}")
+            for facility in facilities:
+                print(f"    ⚗️ {facility['facility_type']} (Capacity: {facility['capacity']})")
+                print(f"       Efficiency: {facility['efficiency']:.1%} | Condition: {facility['condition']:.1%}")
+                print(f"       Orders: {facility['total_orders']} total, {facility['active_orders']} active")
+                if facility['avg_progress'] > 0:
+                    print(f"       Progress: {facility['avg_progress']:.1%} average")
+                print()
+
 def manage_tracked_users_menu(db):
     """Interactive menu to manage tracked users."""
     print("\n👥 Manage Tracked Users")
@@ -448,9 +536,10 @@ def manage_tracked_users_menu(db):
         print("  1. Add user")
         print("  2. Remove user")
         print("  3. View user inventory summary")
-        print("  4. Return to main menu")
+        print("  4. View user production summary")
+        print("  5. Return to main menu")
 
-        choice = input("\nEnter choice (1-4): ").strip()
+        choice = input("\nEnter choice (1-5): ").strip()
 
         if choice == '1':
             username = input("Enter username to add: ").strip()
@@ -487,7 +576,7 @@ def manage_tracked_users_menu(db):
                 print("❌ No users to view")
                 continue
 
-            print("Select user to view:")
+            print("Select user to view inventory:")
             for i, user in enumerate(tracked_users, 1):
                 print(f"  {i}. {user}")
 
@@ -520,13 +609,32 @@ def manage_tracked_users_menu(db):
                 print("❌ Please enter a valid number")
 
         elif choice == '4':
+            if not tracked_users:
+                print("❌ No users to view")
+                continue
+
+            print("Select user to view production:")
+            for i, user in enumerate(tracked_users, 1):
+                print(f"  {i}. {user}")
+
+            try:
+                selection = int(input("Enter number: ").strip()) - 1
+                if 0 <= selection < len(tracked_users):
+                    username = tracked_users[selection]
+                    view_user_production_summary(db, username)
+                else:
+                    print("❌ Invalid selection")
+            except ValueError:
+                print("❌ Please enter a valid number")
+
+        elif choice == '5':
             break
         else:
-            print("❌ Invalid choice. Please enter 1-4.")
+            print("❌ Invalid choice. Please enter 1-5.")
 
 def run_inventory_setup_mode():
-    """Interactive setup mode for configuring inventory tracking."""
-    print("📦 Inventory Setup Mode")
+    """Interactive setup mode for configuring inventory and production tracking."""
+    print("📦 Inventory & Production Setup Mode")
     print("=" * 50)
 
     try:
@@ -553,57 +661,100 @@ def run_inventory_setup_mode():
 
         # Menu loop
         while True:
-            print("\n📋 Inventory Setup Options:")
+            print("\n📋 Setup Options:")
             print("  1. Manage tracked users")
-            print("  2. Run inventory sync for all users")
-            print("  3. Run inventory sync for specific user")
-            print("  4. Test sync with current FIO user")
-            print("  5. Return to main menu")
+            print("  2. Run full sync (inventory + production) for all users")
+            print("  3. Run inventory sync only for all users")
+            print("  4. Run production sync only for all users")
+            print("  5. Sync specific user (inventory + production)")
+            print("  6. Test sync with current FIO user")
+            print("  7. Return to main menu")
 
-            choice = input("\nEnter choice (1-5): ").strip()
+            choice = input("\nEnter choice (1-7): ").strip()
 
             if choice == '1':
                 manage_tracked_users_menu(db)
 
             elif choice == '2':
+                inventory_success = sync_inventory_data(fio_handler, db)
+                production_success = sync_production_data(fio_handler, db)
+                if inventory_success and production_success:
+                    print("\n✅ Full sync completed!")
+                else:
+                    print("\n❌ Sync had failures!")
+
+            elif choice == '3':
                 success = sync_inventory_data(fio_handler, db)
                 if success:
                     print("\n✅ Inventory sync completed!")
                 else:
                     print("\n❌ Inventory sync failed!")
 
-            elif choice == '3':
+            elif choice == '4':
+                success = sync_production_data(fio_handler, db)
+                if success:
+                    print("\n✅ Production sync completed!")
+                else:
+                    print("\n❌ Production sync failed!")
+
+            elif choice == '5':
                 username = input("Enter username to sync: ").strip()
                 if username:
-                    print(f"🔄 Syncing inventory for {username}...")
-                    success = db.sync_user_inventory_data(fio_handler, username)
-                    if success:
-                        print(f"✅ Successfully synced inventory for {username}")
-                        summary = db.get_user_inventory_summary(username)
-                        print(f"📊 Found {summary['totals']['containers']} storage containers")
+                    print(f"🔄 Syncing inventory and production for {username}...")
+                    inventory_success = db.sync_user_inventory_data(fio_handler, username)
+                    production_success = db.sync_user_production_data(fio_handler, username)
+
+                    if inventory_success and production_success:
+                        print(f"✅ Successfully synced all data for {username}")
+
+                        # Show summaries
+                        inv_summary = db.get_user_inventory_summary(username)
+                        prod_summary = db.get_user_production_summary(username)
+                        print(f"📊 Inventory: {inv_summary['totals']['containers']} containers")
+                        print(f"📊 Production: {prod_summary['totals']['total_facilities']} facilities")
                     else:
-                        print(f"❌ Failed to sync inventory for {username}")
+                        print(f"❌ Sync had failures for {username}")
+                        if not inventory_success:
+                            print("  - Inventory sync failed")
+                        if not production_success:
+                            print("  - Production sync failed")
                 else:
                     print("❌ No username provided")
 
-            elif choice == '4':
+            elif choice == '6':
                 current_user = fio_handler.get_username()
                 if current_user:
                     print(f"🔄 Testing sync with authenticated user: {current_user}")
-                    success = db.sync_user_inventory_data(fio_handler, current_user)
-                    if success:
+                    inventory_success = db.sync_user_inventory_data(fio_handler, current_user)
+                    production_success = db.sync_user_production_data(fio_handler, current_user)
+
+                    if inventory_success and production_success:
                         print(f"✅ Test sync successful for {current_user}")
-                        summary = db.get_user_inventory_summary(current_user)
-                        print(f"📊 Found {summary['totals']['containers']} storage containers")
+
+                        # Show summaries
+                        inv_summary = db.get_user_inventory_summary(current_user)
+                        prod_summary = db.get_user_production_summary(current_user)
+                        print(f"📊 Inventory: {inv_summary['totals']['containers']} containers")
+                        print(f"📊 Production: {prod_summary['totals']['total_facilities']} facilities")
                     else:
-                        print(f"❌ Test sync failed for {current_user}")
+                        print(f"❌ Test sync had failures for {current_user}")
+                        if not inventory_success:
+                            print("  - Inventory sync failed")
+                        if not production_success:
+                            print("  - Production sync failed")
                 else:
                     print("❌ Could not get current user")
 
-            elif choice == '5':
+            elif choice == '7':
                 break
             else:
-                print("❌ Invalid choice. Please enter 1-5.")
+                print("❌ Invalid choice. Please enter 1-7.")
+
+    except Exception as e:
+        print(f"\n❌ Setup failed: {e}")
+        if should_enable_dev_features():
+            import traceback
+            traceback.print_exc()
 
     except Exception as e:
         print(f"\n❌ Setup failed: {e}")
