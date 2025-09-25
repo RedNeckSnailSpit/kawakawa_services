@@ -1019,7 +1019,7 @@ class DatabaseHandler:
                             input_material.get('MaterialId'),
                             input_material.get('MaterialTicker'),
                             input_material.get('MaterialName'),
-                            input_material.get('Amount', 0)
+                            input_material.get('MaterialAmount', 0)
                         )
 
                     # Clear and add output materials
@@ -1038,7 +1038,7 @@ class DatabaseHandler:
                             output_material.get('MaterialId'),
                             output_material.get('MaterialTicker'),
                             output_material.get('MaterialName'),
-                            output_material.get('Amount', 0)
+                            output_material.get('MaterialAmount', 0)
                         )
 
             print(f"Successfully synced production data for {username}")
