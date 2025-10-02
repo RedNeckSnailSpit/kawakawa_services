@@ -293,6 +293,31 @@ class DatabaseHandler:
                     );
                 """);
 
+        # Burn data table
+        cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS consumption_rates (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        username VARCHAR(255) NOT NULL,
+                        planet_natural_id VARCHAR(50),
+                        planet_name VARCHAR(255),
+                        material_ticker VARCHAR(10) NOT NULL,
+                        daily_consumption DECIMAL(10,3) NOT NULL DEFAULT 0,
+                        is_essential BOOLEAN DEFAULT FALSE,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        
+                        INDEX idx_username (username),
+                        INDEX idx_planet_natural_id (planet_natural_id),
+                        INDEX idx_material_ticker (material_ticker),
+                        INDEX idx_username_planet_ticker (username, planet_natural_id, material_ticker),
+                        
+                        FOREIGN KEY (username) REFERENCES players(username) ON DELETE CASCADE,
+                        FOREIGN KEY (material_ticker) REFERENCES items(ticker) ON UPDATE CASCADE
+                    );
+                """);
+
+
+
         conn.commit()
         cursor.close()
 
@@ -1165,3 +1190,173 @@ class DatabaseHandler:
         exists = cursor.fetchone() is not None
         cursor.close()
         return exists
+
+    def sync_user_consumption_data(self, fio_handler, username: str) -> bool:
+        """
+        Sync consumption/burnrate data for a specific user using FIO API.
+        """
+        try:
+            print(f"Syncing consumption data for user: {username}")
+
+            # Ensure player exists
+            self.upsert_player(username)
+
+            # Get burnrate data
+            csv_data, status_code = fio_handler.burnrate(username)
+            if status_code != 200 or not csv_data:
+                print(f"Failed to get consumption data for {username} (Status: {status_code})")
+                return False
+
+            # Parse CSV data
+            import csv
+            import io
+
+            csv_reader = csv.DictReader(io.StringIO(csv_data))
+            rows = list(csv_reader)
+
+            if not rows:
+                print(f"No consumption data found for {username}")
+                return True  # Not an error, just no data
+
+            # Clear existing consumption data for this user
+            self.clear_user_consumption_data(username)
+
+            # Process each consumption record
+            processed_count = 0
+            for row in rows:
+                try:
+                    planet_natural_id = row.get('PlanetNaturalId', '')
+                    planet_name = row.get('PlanetName', '')
+                    material_ticker = row.get('Ticker', '')
+                    daily_consumption = float(row.get('DailyConsumption', 0))
+                    is_essential = row.get('Essential', 'False').lower() == 'true'
+
+                    # Ensure material exists in items table
+                    self.upsert_item(material_ticker, material_ticker, None)  # We don't have name/category from CSV
+
+                    # Store consumption data
+                    self.upsert_consumption_rate(
+                        username, planet_natural_id, planet_name,
+                        material_ticker, daily_consumption, is_essential
+                    )
+
+                    processed_count += 1
+
+                except Exception as e:
+                    print(f"Error processing consumption record for {username}: {e}")
+                    continue
+
+            print(f"Successfully synced {processed_count} consumption records for {username}")
+            return True
+
+        except Exception as e:
+            print(f"Error syncing consumption data for {username}: {e}")
+            return False
+
+    def clear_user_consumption_data(self, username: str) -> None:
+        """Clear all consumption data for a specific user."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM consumption_rates WHERE username = %s", (username,))
+        conn.commit()
+        cursor.close()
+
+    def upsert_consumption_rate(self, username: str, planet_natural_id: str, planet_name: str,
+                                material_ticker: str, daily_consumption: float, is_essential: bool) -> None:
+        """Insert or update a consumption rate record."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO consumption_rates 
+            (username, planet_natural_id, planet_name, material_ticker, daily_consumption, is_essential)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              planet_name = VALUES(planet_name),
+              daily_consumption = VALUES(daily_consumption),
+              is_essential = VALUES(is_essential),
+              last_updated = CURRENT_TIMESTAMP;
+        """, (username, planet_natural_id, planet_name, material_ticker, daily_consumption, is_essential))
+        conn.commit()
+        cursor.close()
+
+    def get_user_consumption_summary(self, username: str):
+        """Get consumption summary for a specific user."""
+        conn = self._connect()
+        cursor = conn.cursor()
+
+        # Get totals
+        cursor.execute("""
+            SELECT 
+                COUNT(DISTINCT planet_natural_id) as total_planets,
+                COUNT(DISTINCT material_ticker) as total_materials,
+                COUNT(*) as total_records,
+                SUM(daily_consumption) as total_daily_consumption,
+                SUM(CASE WHEN is_essential = TRUE THEN daily_consumption ELSE 0 END) as essential_consumption,
+                COUNT(CASE WHEN is_essential = TRUE THEN 1 ELSE NULL END) as essential_materials
+            FROM consumption_rates 
+            WHERE username = %s
+        """, (username,))
+        totals_row = cursor.fetchone()
+
+        totals = {
+            'total_planets': totals_row[0] or 0,
+            'total_materials': totals_row[1] or 0,
+            'total_records': totals_row[2] or 0,
+            'total_daily_consumption': float(totals_row[3] or 0),
+            'essential_consumption': float(totals_row[4] or 0),
+            'essential_materials': totals_row[5] or 0
+        }
+
+        # Get consumption by planet
+        cursor.execute("""
+            SELECT 
+                planet_natural_id,
+                planet_name,
+                COUNT(*) as material_count,
+                SUM(daily_consumption) as planet_consumption,
+                SUM(CASE WHEN is_essential = TRUE THEN daily_consumption ELSE 0 END) as essential_consumption
+            FROM consumption_rates 
+            WHERE username = %s
+            GROUP BY planet_natural_id, planet_name
+            ORDER BY planet_consumption DESC
+        """, (username,))
+
+        planets = []
+        for row in cursor.fetchall():
+            planets.append({
+                'planet_natural_id': row[0],
+                'planet_name': row[1],
+                'material_count': row[2],
+                'planet_consumption': float(row[3]),
+                'essential_consumption': float(row[4])
+            })
+
+        # Get consumption by material
+        cursor.execute("""
+            SELECT 
+                material_ticker,
+                SUM(daily_consumption) as total_consumption,
+                COUNT(DISTINCT planet_natural_id) as planet_count,
+                MAX(is_essential) as is_essential
+            FROM consumption_rates 
+            WHERE username = %s
+            GROUP BY material_ticker
+            ORDER BY total_consumption DESC
+        """, (username,))
+
+        materials = []
+        for row in cursor.fetchall():
+            materials.append({
+                'material_ticker': row[0],
+                'total_consumption': float(row[1]),
+                'planet_count': row[2],
+                'is_essential': bool(row[3])
+            })
+
+        cursor.close()
+
+        return {
+            'totals': totals,
+            'planets': planets,
+            'materials': materials
+        }

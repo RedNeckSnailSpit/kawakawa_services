@@ -152,7 +152,10 @@ class SyncScheduler:
             # Sync production data
             production_success = sync_production_data(self.fio_handler, self.db)
 
-            return sheets_success and inventory_success and production_success
+            # Sync consumption data
+            consumption_success = sync_consumption_data(self.fio_handler, self.db)
+
+            return sheets_success and inventory_success and production_success and consumption_success
 
         except Exception as e:
             print(f"❌ Sync operation failed: {e}")
@@ -637,9 +640,10 @@ def run_inventory_setup_mode():
             print("  2. Run full sync (inventory + production) for all users")
             print("  3. Run inventory sync only for all users")
             print("  4. Run production sync only for all users")
-            print("  5. Sync specific user (inventory + production)")
-            print("  6. Test sync with current FIO user")
-            print("  7. Return to main menu")
+            print("  5. Run consumption sync only for all users")
+            print("  6. Sync specific user (inventory + production + consumption)")
+            print("  7. Test sync with current FIO user")
+            print("  8. Return to main menu")
 
             choice = input("\nEnter choice (1-7): ").strip()
 
@@ -733,6 +737,57 @@ def run_inventory_setup_mode():
             import traceback
             traceback.print_exc()
 
+def sync_consumption_data(fio_handler, db):
+    """Handle consumption/burnrate synchronization for tracked users."""
+    print("\n🔥 Consumption Synchronization")
+    print("=" * 50)
+
+    # Get list of users to sync
+    tracked_users = get_tracked_users(db)
+
+    if not tracked_users:
+        print("📋 No users configured for tracking.")
+        print("⭐ Skipping consumption sync (use --inventory to setup users)")
+        return False
+
+    print(f"📋 Syncing consumption data for {len(tracked_users)} users...")
+
+    success_count = 0
+    total_users = len(tracked_users)
+
+    for i, username in enumerate(tracked_users, 1):
+        print(f"\n👤 [{i}/{total_users}] Syncing consumption: {username}")
+        print("-" * 30)
+
+        try:
+            success = db.sync_user_consumption_data(fio_handler, username)
+
+            if success:
+                print(f"✅ {username}: Consumption synced successfully")
+
+                # Show brief summary
+                summary = db.get_user_consumption_summary(username)
+                print(f"   🌍 {summary['totals']['total_planets']} planets")
+                print(f"   📦 {summary['totals']['total_materials']} materials consumed")
+                print(f"   🔥 {summary['totals']['total_daily_consumption']:.1f} total daily consumption")
+                print(f"   ⚡ {summary['totals']['essential_materials']} essential materials")
+
+                success_count += 1
+            else:
+                print(f"❌ {username}: Consumption sync failed")
+
+        except Exception as e:
+            print(f"❌ {username}: Error during consumption sync - {e}")
+            if should_enable_dev_features():
+                import traceback
+                traceback.print_exc()
+
+    print(f"\n📈 Consumption Sync Results:")
+    print("=" * 30)
+    print(f"✅ Successful: {success_count}/{total_users}")
+    print(f"❌ Failed: {total_users - success_count}/{total_users}")
+
+    return success_count > 0
 
 def main():
     # Generate version string

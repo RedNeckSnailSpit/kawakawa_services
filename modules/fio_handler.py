@@ -431,3 +431,40 @@ class FIOHandler:
         except Exception as e:
             print(f"❌ Error in sites_warehouses request: {e}")
             return None, None
+
+    def burnrate(self, username: str):
+        """
+        Get burnrate (consumption) information for a user in CSV format.
+
+        Args:
+            username (str): The username to get burnrate data for
+
+        Returns:
+            tuple: (csv_data, status_code) or (None, None) if request failed
+        """
+        if not self.api_key:
+            return None, None
+
+        try:
+            # Note: This endpoint uses apikey as query parameter instead of Authorization header
+            response = requests.get(
+                f"{self.base_url}/csv/burnrate",
+                params={
+                    'apikey': self.api_key,
+                    'username': username
+                },
+                headers={
+                    'User-Agent': 'FIO-Handler/1.0',
+                    'Accept': 'application/csv'
+                },
+                timeout=10
+            )
+
+            # Return raw CSV text instead of trying to parse as JSON
+            csv_data = response.text if response.text.strip() else None
+            return csv_data, response.status_code
+
+        except Exception as e:
+            print(f"❌ Error in burnrate request: {e}")
+            return None, None
+
